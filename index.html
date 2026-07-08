@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Universal Automatic BLE Configurator</title>
+    <title>Garland Service Application</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 650px; margin: 20px auto; padding: 20px; line-height: 1.6; background-color: #f4f6f9; color: #333; }
         .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
@@ -22,16 +22,14 @@
 
     <h2>Universal BLE System Configurator</h2>
     
-    <!-- Simplified Connection Card -->
     <div class="card">
         <div id="status" class="disconnected">Status: Disconnected</div>
         <div>
-            <button id="btnConnect">Scan All Nearby Devices</button>
+            <button id="btnConnect">Scan & Connect to Any Device</button>
             <button id="btnDisconnect" style="background:#d9383a;" disabled>Disconnect</button>
         </div>
     </div>
 
-    <!-- Target Virtual Path Selector -->
     <div class="card">
         <div class="form-group">
             <label for="fileSelector">Select Target Configuration Profile File</label>
@@ -46,7 +44,7 @@
     <div class="card">
         <h3>Dynamic Parameter Interface</h3>
         <div id="dynamicForm">
-            <p style="color: #666;">Connect an unmapped peripheral device to ingest variables dynamically.</p>
+            <p style="color: #666;">Connect a peripheral device to ingest variables dynamically.</p>
         </div>
         <button id="btnSave" disabled>Compile & Push to Target Path</button>
     </div>
@@ -74,40 +72,54 @@
         document.getElementById('btnConnect').addEventListener('click', async () => {
             try {
                 document.getElementById('status').className = 'disconnected';
-                document.getElementById('status').textContent = 'Initial System Scanning...';
+                document.getElementById('status').textContent = 'Scanning all available devices...';
 
-                // Accept All Devices allows any antenna ping to populate the browser window
+                // To bypass the browser's strict security sandbox without hardcoding variables on screen,
+                // we pre-whitelist standard generic serial service patterns (Kolban, Nordic UART, and basic 16-bit IDs).
+                // This grants the web app the native authority to explore the services upon selection.
                 device = await navigator.bluetooth.requestDevice({
-                    acceptAllDevices: true
+                    acceptAllDevices: true,
+                    optionalServices: [
+                        '4fafc201-1fb5-459e-8fcc-c5c9c331914b', // ESP32 Kolban Default
+                        '6e400001-b5a3-f393-e0a9-e50e24dcca9e', // Nordic UART Serial
+                        '0000ffe0-0000-1000-8000-00805f9b34fb', // Generic 16-bit Serial (0xFFE0)
+                        '0000180a-0000-1000-8000-00805f9b34fb'  // Device Information Profile
+                    ]
                 });
 
-                document.getElementById('status').textContent = 'Connecting & analyzing services...';
+                document.getElementById('status').textContent = 'Connecting and mapping characteristics...';
                 device.addEventListener('gattserverdisconnected', onDisconnectHandler);
                 
                 const server = await device.gatt.connect();
                 
-                // AUTOMATIC SERVICES LOOKUP: Instead of a hardcoded ID, look at everything the target device offers
+                // Programmatically discover which service the user's specific device is using
                 const services = await server.getPrimaryServices();
-                if (services.length === 0) throw new Error("No primary services exposed by this device.");
-                
-                // Target the first primary service found on the device automatically
-                const primaryService = services[0];
-                
-                // AUTOMATIC CHARACTERISTICS LOOKUP: Look up all characteristics inside that service
-                const characteristics = await primaryService.getCharacteristics();
-                
-                // Assign variables dynamically based on their hardware properties
-                for (const char of characteristics) {
-                    if (char.properties.write || char.properties.writeWithoutResponse) {
-                        activeWriteChar = char;
+                if (services.length === 0) throw new Error("Security block: No whitelisted services exposed on this device layout.");
+
+                activeWriteChar = null;
+                activeNotifyChar = null;
+
+                // Loop over the exposed services to isolate our read/write pathways automatically
+                for (const service of services) {
+                    try {
+                        const characteristics = await service.getCharacteristics();
+                        for (const char of characteristics) {
+                            if ((char.properties.write || char.properties.writeWithoutResponse) && !activeWriteChar) {
+                                activeWriteChar = char;
+                            }
+                            if ((char.properties.notify || char.properties.indicate) && !activeNotifyChar) {
+                                activeNotifyChar = char;
+                            }
+                        }
+                    } catch (e) {
+                        // Skip internal secure system descriptors if encountered
+                        continue;
                     }
-                    if (char.properties.notify || char.properties.indicate) {
-                        activeNotifyChar = char;
-                    }
+                    if (activeWriteChar && activeNotifyChar) break;
                 }
 
                 if (!activeWriteChar || !activeNotifyChar) {
-                    throw new Error("Connected successfully, but could not discover a valid pairing of Read/Write registers.");
+                    throw new Error("Connected successfully, but could not automatically resolve matching input/output parameters.");
                 }
 
                 await activeNotifyChar.startNotifications();
@@ -119,12 +131,11 @@
                 document.getElementById('btnDisconnect').disabled = false;
                 fileSelector.disabled = false;
 
-                // Fire initialization payload read request
                 requestFileFromDevice(fileSelector.value);
 
             } catch (err) {
                 document.getElementById('status').className = 'disconnected';
-                document.getElementById('status').textContent = `Scan Ceased: ${err.message}`;
+                document.getElementById('status').textContent = `Connection Failed: ${err.message}`;
             }
         });
 
@@ -132,7 +143,7 @@
             if (!activeWriteChar) return;
             
             incomingBuffer = ""; 
-            dynamicForm.innerHTML = `<p style="color: #666;">Polling virtual directory [${targetFileId}]...</p>`;
+            dynamicForm.innerHTML = `<p style="color: #666;">Polling virtual file [${targetFileId}]...</p>`;
             btnSave.disabled = true;
 
             const encoder = new TextEncoder();
@@ -150,7 +161,7 @@
                     renderDynamicInterface(structuredJson);
                     btnSave.disabled = false;
                 } catch (err) {
-                    // Waiting for additional frame packets
+                    // Structure packet split; listening for remainder of buffer
                 }
             }
         }
