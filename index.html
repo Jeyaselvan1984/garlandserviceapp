@@ -53,7 +53,7 @@
         <button id="btnSave" disabled>Compile & Push to Target Path</button>
     </div>
 
-    <script>
+        <script>
         let device = null;
         let activeWriteChar = null;
         let activeNotifyChar = null;
@@ -192,47 +192,63 @@
                 label.textContent = key.replace(/_/g, ' '); // Clean look for keys with underscores
 
                 const input = document.createElement('input');
-
                 // Cast tracking types automatically between strings and numerical limits
-                    input.type = typeof dataObj[key] === 'number' ? 'number' : 'text';
-                    input.value = dataObj[key];
+                input.type = typeof dataObj[key] === 'number' ? 'number' : 'text';
+                input.value = dataObj[key];
+                
                 // Real-time tracking into the runtime object cache upon user input adjustments
-                input.addEventListener('input', (e) => {structuredJson[key] = input.type === 'number' ? Number(e.target.value) : e.target.value;});
-                wrapper.appendChild(label);wrapper.appendChild(input);
+                input.addEventListener('input', (e) => {
+                    structuredJson[key] = input.type === 'number' ? Number(e.target.value) : e.target.value;
+                });
+
+                wrapper.appendChild(label);
+                wrapper.appendChild(input);
                 dynamicForm.appendChild(wrapper);
             });
         }
+
         // COMPILE AND PUSH WITH OVERWRITE DIRECTIVES
         btnSave.addEventListener('click', async () => {
             try {
                 btnSave.disabled = true;
                 const activePath = fileSelector.value;
-                dynamicForm.innerHTML = <p class="loader">Packaging payload configurations and streaming blocks to target location [${activePath}]...</p>;
-                    // Create full validation transaction object payload mapping
-                const structuredPayload = {action: "write",file: activePath,data: structuredJson};
+                
+                dynamicForm.innerHTML = `<p class="loader">Packaging payload configurations and streaming blocks to target location [${activePath}]...</p>`;
+
+                // Create full validation transaction object payload mapping
+                const structuredPayload = {
+                    action: "write",
+                    file: activePath,
+                    data: structuredJson
+                };
+
                 const payloadString = JSON.stringify(structuredPayload);
                 const rawBuffer = new TextEncoder().encode(payloadString);
-                const MTU_MAX_CHUNK = 20; 
-                // Preserves strict MTU boundary tolerances for peripheral modules
+                
+                const MTU_MAX_CHUNK = 20; // Preserves strict MTU boundary tolerances for peripheral modules
                 let bytesSent = 0;
+
                 // Iterative sliding network frame delivery block loops
-                while (bytesSent < rawBuffer.length) 
-                {
+                while (bytesSent < rawBuffer.length) {
                     const windowChunk = rawBuffer.slice(bytesSent, bytesSent + MTU_MAX_CHUNK);
                     await activeWriteChar.writeValueWithResponse(windowChunk);
                     bytesSent += MTU_MAX_CHUNK;
+                    
                     // Interval sync delay window pacing mechanics
                     await new Promise(res => setTimeout(res, chunkTimeout));
                 }
-                alert(Configuration completely uploaded! Overwrite target instruction committed to [${activePath}] location storage successfully.);
+
+                alert(`Configuration completely uploaded! Overwrite target instruction committed to [${activePath}] location storage successfully.`);
+                
                 // Automatically re-request the file contents from the device to refresh the form interface and confirm changes
                 requestFileFromDevice(activePath);
-        } catch (err) 
-                                 {
-            alert(Transmission Protocol Fault: ${err.message});
-        // Restore parameters to re-attempt sync operations if failure state trips
-            renderDynamicInterface(structuredJson);
-            btnSave.disabled = false;}
+
+            } catch (err) {
+                alert(`Transmission Protocol Fault: ${err.message}`);
+                // Restore parameters to re-attempt sync operations if failure state trips
+                renderDynamicInterface(structuredJson);
+                btnSave.disabled = false;
+            }
         });
 
         document.getElementById('btnDisconnect').addEventListener('click', () => {
