@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Universal Multi-File BLE Configurator</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 20px auto; padding: 20px; line-height: 1.6; background-color: #f4f6f9; color: #333; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        button { background: #0070f3; color: white; border: none; padding: 12px 20px; font-size: 14px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-right: 10px; }
+        button:hover { background: #0051a8; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .form-group { margin-bottom: 15px; display: flex; flex-direction: column; }
+        label { font-weight: 600; margin-bottom: 6px; font-size: 13px; color: #444; text-transform: uppercase; }
+        input, select { padding: 10px; border: 1px solid #ccd1d9; border-radius: 6px; font-size: 14px; background: white; }
+        #status { font-weight: bold; padding: 8px 12px; border-radius: 4px; margin-bottom: 20px; display: inline-block; font-size: 14px; }
+        .disconnected { background: #ffebee; color: #c62828; }
+        .connected { background: #e8f5e9; color: #2e7d32; }
+    </style>
+</head>
+<body>
+
+    <h2>System Configuration Manager</h2>
+    
+    <div class="card">
+        <div id="status" class="disconnected">Status: Disconnected</div>
+        <div>
+            <button id="btnConnect">Scan All Devices</button>
+            <button id="btnDisconnect" style="background:#d9383a;" disabled>Disconnect</button>
+        </div>
+    </div>
+
+    <!-- Target Virtual Path Selector -->
+    <div class="card">
+        <div class="form-group">
+            <label for="fileSelector">Select Configuration Profile</label>
+            <select id="fileSelector" disabled>
+                <option value="network_settings">Network Configuration (wifi.json)</option>
+                <option value="sensor_calib">Sensor Calibrations (sensors.json)</option>
+                <option value="system_global">Global Constants (system.json)</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Dynamic Parameter Interface</h3>
+        <div id="dynamicForm">
+            <p style="color: #666;">Connect a device to load and manipulate system profiles.</p>
+        </div>
+        <button id="btnSave" disabled>Write and Save to Target Path</button>
+    </div>
+
+    <script>
+        let TARGET_SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'; 
+        let WRITE_CHAR     = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; 
+        let NOTIFY_CHAR    = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+        let device = null;
+        let activeWriteChar = null;
+        let activeNotifyChar = null;
+        let incomingBuffer = "";
+        let structuredJson = {};
+
+        const isMobile = /Android|iPhone|iPad/i.test(navigator.userAgent);
+        const chunkTimeout = isMobile ? 80 : 35;
+
+        // UI Selectors
+        const fileSelector = document.getElementById('fileSelector');
+        const dynamicForm = document.getElementById('dynamicForm');
+        const btnSave = document.getElementById('btnSave');
+
+        // 1. CHOOSE CONFIGURATION PROFILE PATH
+        fileSelector.addEventListener('change', () => {
+            if (device && device.gatt.connected) {
+                requestFileFromDevice(fileSelector.value);
+            }
+        });
+
+        // 2. CONNECT AND GRANT PERMISSIONS
+        document.getElementById('btnConnect').addEventListener('click', async () => {
+            try {
+                document.getElementById('status').className = 'disconnected';
+                document.getElementById('status').textContent = 'Scanning...';
+
+                device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: [TARGET_SERVICE]
+                });
+
+                device.addEventListener('gattserverdisconnected', onDisconnectHandler);
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService(TARGET_SERVICE);
+                
+                activeWriteChar = await service.getCharacteristic(WRITE_CHAR);
+                activeNotifyChar = await service.getCharacteristic(NOTIFY_CHAR);
+
+                await activeNotifyChar.startNotifications();
+                activeNotifyChar.addEventListener('characteristicvaluechanged', processIncomingPackets);
+
+                document.getElementById('status').className = 'connected';
+                document.getElementById('status').textContent = `Connected: ${device.name || "BLE Device"}`;
+                document.getElementById('btnConnect').disabled = true;
+                document.getElementById('btnDisconnect').disabled = false;
+                fileSelector.disabled = false;
+
+                // Request default initialization file path
+                requestFileFromDevice(fileSelector.value);
+
+            } catch (err) {
+                document.getElementById('status').className = 'disconnected';
+                document.getElementById('status').textContent = `Scan Cancelled: ${err.message}`;
+            }
+        });
+
+        // 3. TARGETED FILE FETCH COMMAND
+        async function requestFileFromDevice(targetFileId) {
+            if (!activeWriteChar) return;
+            
+            incomingBuffer = ""; // Reset parsing buffer
+            dynamicForm.innerHTML = `<p style="color: #666;">Streaming target path [${targetFileId}]...</p>`;
+            btnSave.disabled = true;
+
+            // Pack targeted profile index within the outbound data stream
+            const encoder = new TextEncoder();
+            const requestCommand = JSON.stringify({ action: "read", file: targetFileId });
+            await activeWriteChar.writeValueWithResponse(encoder.encode(requestCommand));
+        }
+
+        // 4. ASSEMBLING INBOUND PACKETS
+        function processIncomingPackets(event) {
+            const decoder = new TextDecoder();
+            incomingBuffer += decoder.decode(event.target.value);
+
+            // Dynamically listen for terminal object delimiter closing tags
+            if (incomingBuffer.trim().endsWith("}")) {
+                try {
+                    structuredJson = JSON.parse(incomingBuffer);
+                    renderDynamicInterface(structuredJson);
+                    btnSave.disabled = false;
+                } catch (err) {
+                    // Packet sequence incomplete; waiting for buffer completion
+                }
+            }
+        }
+
+        // 5. AGNOSTIC FORMS UI GENERATOR
+        function renderDynamicInterface(dataObj) {
+            dynamicForm.innerHTML = "";
+
+            Object.keys(dataObj).forEach(key => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'form-group';
+
+                const label = document.createElement('label');
+                label.textContent = key.replace(/_/g, ' ');
+
+                const input = document.createElement('input');
+                input.type = typeof dataObj[key] === 'number' ? 'number' : 'text';
+                input.value = dataObj[key];
+                
+                input.addEventListener('input', (e) => {
+                    structuredJson[key] = input.type === 'number' ? Number(e.target.value) : e.target.value;
+                });
+
+                wrapper.appendChild(label);
+                wrapper.appendChild(input);
+                dynamicForm.appendChild(wrapper);
+            });
+        }
+
+        // 6. CHUNKED SAVE AND TRANSMISSION PACKS
+        btnSave.addEventListener('click', async () => {
+            try {
+                btnSave.disabled = true;
+                
+                // Nest active virtual path inside write payload so device routing knows where to commit changes
+                const structuredPayload = {
+                    action: "write",
+                    file: fileSelector.value,
+                    data: structuredJson
+                };
+
+                const payloadString = JSON.stringify(structuredPayload);
+                const rawBuffer = new TextEncoder().encode(payloadString);
+                
+                const MTU_MAX_CHUNK = 20; 
+                let bytesSent = 0;
+
+                while (bytesSent < rawBuffer.length) {
+                    const windowChunk = rawBuffer.slice(bytesSent, bytesSent + MTU_MAX_CHUNK);
+                    await activeWriteChar.writeValueWithResponse(windowChunk);
+                    bytesSent += MTU_MAX_CHUNK;
+                    await new Promise(res => setTimeout(res, chunkTimeout));
+                }
+
+                alert(`Configuration [${fileSelector.value}] updated and successfully written to device system memory!`);
+                btnSave.disabled = false;
+            } catch (err) {
+                alert(`Write Operation Aborted: ${err.message}`);
+                btnSave.disabled = false;
+            }
+        });
+
+        document.getElementById('btnDisconnect').addEventListener('click', () => {
+            if (device && device.gatt.connected) device.gatt.disconnect();
+        });
+
+        function onDisconnectHandler() {
+            document.getElementById('status').className = 'disconnected';
+            document.getElementById('status').textContent = 'Status: Disconnected';
+            document.getElementById('btnConnect').disabled = false;
+            document.getElementById('btnDisconnect').disabled = true;
+            btnSave.disabled = true;
+            fileSelector.disabled = true;
+            dynamicForm.innerHTML = '<p style="color: #666;">Device disconnected. System interface cleared.</p>';
+            incomingBuffer = "";
+        }
+    </script>
+</body>
+</html>
