@@ -198,8 +198,8 @@
                     input.value = dataObj[key];
                 // Real-time tracking into the runtime object cache upon user input adjustments
                 input.addEventListener('input', (e) => {structuredJson[key] = input.type === 'number' ? Number(e.target.value) : e.target.value;});
-                wrapper.appendChild(label);wrapper.appendChild(input);d
-                    ynamicForm.appendChild(wrapper);
+                wrapper.appendChild(label);wrapper.appendChild(input);
+                dynamicForm.appendChild(wrapper);
             });
         }
         // COMPILE AND PUSH WITH OVERWRITE DIRECTIVES
